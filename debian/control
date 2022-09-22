@@ -1,0 +1,26 @@
+Source: efibootmgr
+Section: admin
+Priority: optional
+Maintainer: Debian UEFI Maintainers <debian-efi@lists.debian.org>
+Uploaders: Daniel Jared Dominguez <jared.dominguez@dell.com>, Steve McIntyre <93sam@debian.org>, Mario Limonciello <mario.limonciello@dell.com>
+Build-Depends: debhelper (>> 9), pkg-config, libefivar-dev (>= 30), libefiboot-dev (>= 30), libpopt-dev
+Standards-Version: 4.5.0
+Vcs-Git: https://salsa.debian.org/efi-team/efibootmgr.git
+Vcs-Browser: https://salsa.debian.org/efi-team/efibootmgr
+
+Package: efibootmgr
+Architecture: amd64 i386 ia64 armhf arm64 armel x32
+Multi-Arch: foreign
+Pre-Depends: ${misc:Pre-Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Interact with the EFI Boot Manager 
+ This is a Linux user-space application to modify the Intel Extensible 
+ Firmware Interface (EFI) Boot Manager configuration. This application can 
+ create and destroy boot entries, change the boot order, change the next 
+ running boot option, and more.
+ .
+ Additional information about (U)EFI can be found at http://www.uefi.org/.
+ .
+ Note: efibootmgr requires that the kernel module efivars be loaded prior 
+ to use. 'modprobe efivars' should do the trick if it does not 
+ automatically load.

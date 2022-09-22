@@ -1,0 +1,22 @@
+#!/usr/bin/make -f
+# rules file for the efibootmgr package, requires debhelper / dh
+# copyright 2012 by Bdale Garbee, GPLv2 or later
+
+export DH_VERBOSE=1
+export DH_OPTIONS=-v
+
+EFIDIR ?= $(shell dpkg-vendor --query vendor | awk '{ print tolower($$0) }')
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	dh_auto_build  -- EFIDIR=$(EFIDIR)
+
+# upstream build installs into /usr/sbin ignoring target directory;
+# since the install step is not actually needed just skip it
+override_dh_auto_install:
+
+override_dh_auto_clean:
+	dh_auto_clean -- EFIDIR=$(EFIDIR)
+
