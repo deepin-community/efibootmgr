@@ -1,3 +1,18 @@
+efibootmgr (17-2) unstable; urgency=medium
+
+  [ Steve McIntyre ]
+  * Remove Jared from Uploaders
+
+  [ Heinrich Schuchardt ]
+  * enable building on riscv64 (LP #1938795).
+    Closes: #959498
+
+  [ Julian Andres Klode ]
+  * Use debhelper-compat (= 13) instead of debian/compat 9.
+  * Bump Standards-Version to 4.5.1
+
+ -- Steve McIntyre <93sam@debian.org>  Sun, 18 Dec 2022 19:51:40 +0000
+
 efibootmgr (17-1) unstable; urgency=medium
 
   [ Steve McIntyre ]
