@@ -4,6 +4,7 @@ include $(TOPDIR)/Make.version
 include $(TOPDIR)/Make.rules
 include $(TOPDIR)/Make.defaults
 include $(TOPDIR)/Make.coverity
+include $(TOPDIR)/Make.fanalyzer
 include $(TOPDIR)/Make.scan-build
 
 SUBDIRS := src
@@ -53,7 +54,7 @@ bumpver :
 	git commit -m "Bump version to $(GITTAG)" -s
 
 tag:
-	git tag -s $(GITTAG) refs/heads/master
+	git tag -s $(GITTAG) refs/heads/main
 
 archive: bumpver tag efibootmgr.spec
 	@rm -rf /tmp/efibootmgr-$(GITTAG) /tmp/efibootmgr-$(GITTAG)-tmp

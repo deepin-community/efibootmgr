@@ -37,6 +37,7 @@
 #include <err.h>
 #include <errno.h>
 #include <limits.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,7 +53,7 @@
 
 #include "list.h"
 #include "efi.h"
-#include "unparse_path.h"
+#include "parse_loader_data.h"
 #include "efibootmgr.h"
 #include "error.h"
 
@@ -106,13 +107,12 @@ read_vars(char **namelist,
 
 	for (i=0; namelist[i] != NULL; i++) {
 		if (namelist[i]) {
-			entry = malloc(sizeof(var_entry_t));
+			entry = calloc(1, sizeof(var_entry_t));
 			if (!entry) {
-				efi_error("malloc(%zd) failed",
+				efi_error("calloc(1, %zd) failed",
 					  sizeof(var_entry_t));
 				goto err;
 			}
-			memset(entry, 0, sizeof(var_entry_t));
 
 			rc = efi_get_variable(EFI_GLOBAL_GUID, namelist[i],
 					       &entry->data, &entry->data_size,
@@ -395,7 +395,7 @@ set_u16(const char *name, uint16_t num)
 }
 
 static int
-add_to_order(const char *name, uint16_t num)
+add_to_order(const char *name, uint16_t num, uint16_t insert_at)
 {
 	var_entry_t *order = NULL;
 	uint64_t new_data_size;
@@ -409,8 +409,9 @@ add_to_order(const char *name, uint16_t num)
 		return rc;
 	}
 
-	/* We've now got an array (in order->data) of the
-	 * order.  First add our entry, then copy the old array.
+	/* We've now got an array (in order->data) of the order.  Copy over
+	 * any entries that should precede, add our entry, and then copy the
+	 * rest of the old array.
 	 */
 	old_data = (uint16_t *)order->data;
 	new_data_size = order->data_size + sizeof(uint16_t);
@@ -418,8 +419,16 @@ add_to_order(const char *name, uint16_t num)
 	if (!new_data)
 		return -1;
 
-	new_data[0] = num;
-	memcpy(new_data+1, old_data, order->data_size);
+	if (insert_at != 0) {
+		if (insert_at > order->data_size)
+			insert_at = order->data_size;
+		memcpy(new_data, old_data, insert_at * sizeof(uint16_t));
+	}
+	new_data[insert_at] = num;
+	if (order->data_size - insert_at * sizeof(uint16_t) > 0) {
+		memcpy(new_data + insert_at + 1, old_data + insert_at,
+		       order->data_size - insert_at * sizeof(uint16_t));
+	}
 
 	/* Now new_data has what we need */
 	free(order->data);
@@ -611,9 +620,47 @@ delete_var(const char *prefix, uint16_t num)
 				return rc;
 			}
 			list_del(&(entry->list));
+			free(entry->name);
+			free(entry->data);
+			memset(entry, 0, sizeof(*entry));
+			free(entry);
 			break; /* short-circuit since it was found */
 		}
 	}
+	return 0;
+}
+
+static int
+delete_label(const char *prefix, const unsigned char *label)
+{
+	list_t *pos;
+	var_entry_t *boot;
+	int num_deleted = 0;
+	int rc;
+	efi_load_option *load_option;
+	const unsigned char *desc;
+
+	list_for_each(pos, &entry_list) {
+		boot = list_entry(pos, var_entry_t, list);
+		load_option = (efi_load_option *)boot->data;
+		desc = efi_loadopt_desc(load_option, boot->data_size);
+
+		if (strcmp((char *)desc, (char *)label) == 0) {
+			rc = delete_var(prefix,boot->num);
+			if (rc < 0) {
+				efi_error("Could not delete %s%04x", prefix, boot->num);
+				return rc;
+			} else {
+				num_deleted++;
+			}
+		}
+	}
+
+	if (num_deleted == 0) {
+		efi_error("Could not delete %s", label);
+		return -1;
+	}
+
 	return 0;
 }
 
@@ -900,7 +947,7 @@ ucs2_to_utf8(const uint16_t * const chars, ssize_t limit)
 		return NULL;
 	memset(ret, 0, limit * 6 +1);
 
-	for (i=0, j=0; chars[i] && i < (limit >= 0 ? limit : i+1); i++,j++) {
+	for (i=0, j=0; i < (limit >= 0 ? limit : i+1) && chars[i]; i++,j++) {
 		if (chars[i] <= 0x7f) {
 			ret[j] = chars[i];
 		} else if (chars[i] > 0x7f && chars[i] <= 0x7ff) {
@@ -917,15 +964,168 @@ ucs2_to_utf8(const uint16_t * const chars, ssize_t limit)
 }
 
 static void
+show_var_path(efi_load_option *load_option, size_t boot_data_size)
+{
+	char *text_path = NULL;
+	size_t text_path_len = 0;
+	uint16_t pathlen;
+	ssize_t rc;
+	efidp dp = NULL;
+	unsigned char *optional_data = NULL;
+	size_t optional_data_len=0;
+	bool is_shim = false;
+	const char * const shim_path_segments[] = {
+		"/File(\\EFI\\", "\\shim", ".efi)", NULL
+	};
+
+	pathlen = efi_loadopt_pathlen(load_option,
+				      boot_data_size);
+	dp = efi_loadopt_path(load_option, boot_data_size);
+	rc = efidp_format_device_path((unsigned char *)text_path,
+				      text_path_len, dp, pathlen);
+	if (rc < 0) {
+		warning("Could not parse device path");
+		return;
+	}
+	rc += 1;
+
+	text_path_len = rc;
+	text_path = calloc(1, rc);
+	if (!text_path) {
+		warning("Could not parse device path");
+		return;
+	}
+
+	rc = efidp_format_device_path((unsigned char *)text_path,
+				      text_path_len, dp, pathlen);
+	if (rc >= 0) {
+		printf("\t%s", text_path);
+
+		char *a = text_path;
+		for (int i = 0; a && shim_path_segments[i] != NULL; i++) {
+			a = strstr(a, shim_path_segments[i]);
+			if (a)
+				a += strlen(shim_path_segments[i]);
+		}
+		if (a && a[0] == '\0')
+			is_shim = true;
+	}
+
+	free(text_path);
+	if (rc < 0) {
+		warning("Could not parse device path");
+		return;
+	}
+
+	/* Print optional data */
+	rc = efi_loadopt_optional_data(load_option, boot_data_size,
+				       &optional_data, &optional_data_len);
+	if (rc < 0) {
+		warning("Could not parse optional data");
+		return;
+	}
+
+	typedef ssize_t (*parser_t)(char *buffer, size_t buffer_size,
+				    uint8_t *p, uint64_t length);
+	parser_t parser = NULL;
+	if (is_shim && optional_data_len) {
+		char *a = ucs2_to_utf8((uint16_t*)optional_data,
+				       optional_data_len/2);
+		if (!a) {
+			warning("Could not parse optional data");
+			return;
+		}
+		text_path = calloc(1, sizeof(" File(.")
+				      + strlen(a)
+				      + strlen(")"));
+		if (!text_path) {
+			free(a);
+			warning("Could not parse optional data");
+			return;
+		}
+		char *b;
+
+		b = stpcpy(text_path, " File(.");
+		b = stpcpy(b, a);
+		stpcpy(b, ")");
+		free(a);
+	} else if (opts.unicode) {
+		text_path = ucs2_to_utf8((uint16_t*)optional_data,
+					 optional_data_len/2);
+		if (!text_path) {
+			warning("Could not parse optional data");
+			return;
+		}
+	} else if (optional_data_len == sizeof(efi_guid_t)) {
+		parser = parse_efi_guid;
+	} else {
+		parser = parse_raw_text;
+	}
+
+	if (parser) {
+		rc = parser(NULL, 0, optional_data, optional_data_len);
+		if (rc < 0) {
+			warning("Could not parse optional data");
+			return;
+		}
+		rc += 1;
+		text_path_len = rc;
+		text_path = calloc(1, rc);
+		if (!text_path) {
+			warning("Could not parse optional data");
+			return;
+		}
+		rc = parser(text_path, text_path_len,
+			    optional_data, optional_data_len);
+		if (rc < 0) {
+			warning("Could not parse device path");
+			free(text_path);
+			return;
+		}
+	}
+	printf("%s", text_path);
+	free(text_path);
+	printf("\n");
+
+	const_efidp node = dp;
+	if (opts.verbose >= 1)
+		printf("      dp: ");
+	for (rc = 1; opts.verbose >= 1 && rc > 0; ) {
+		ssize_t sz;
+		const_efidp next = NULL;
+		const uint8_t * const data = (const uint8_t * const)node;
+
+		rc = efidp_next_node(node, &next);
+		if (rc < 0) {
+			warning("Could not iterate device path");
+			return;
+		}
+
+		sz = efidp_node_size(node);
+		if (sz <= 0) {
+			warning("Could not iterate device path");
+			return;
+		}
+
+		for (ssize_t j = 0; j < sz; j++)
+			printf("%02hhx%s", data[j], j == sz - 1 ? "" : " ");
+		printf("%s", rc == 0 ? "\n" : " / ");
+
+		node = next;
+	}
+	if (opts.verbose >= 1 && optional_data_len)
+		printf("    data: ");
+	for (unsigned int j = 0; opts.verbose >= 1 && j < optional_data_len; j++)
+		printf("%02hhx%s", optional_data[j], j == optional_data_len - 1 ? "\n" : " ");
+}
+
+static void
 show_vars(const char *prefix)
 {
 	list_t *pos;
 	var_entry_t *boot;
 	const unsigned char *description;
 	efi_load_option *load_option;
-	efidp dp = NULL;
-	unsigned char *optional_data = NULL;
-	size_t optional_data_len=0;
 
 	list_for_each(pos, &entry_list) {
 		boot = list_entry(pos, var_entry_t, list);
@@ -940,62 +1140,8 @@ show_vars(const char *prefix)
 			       & LOAD_OPTION_ACTIVE) ? '*' : ' ');
 		printf("%s", description);
 
-		if (opts.verbose) {
-			char *text_path = NULL;
-			size_t text_path_len = 0;
-			uint16_t pathlen;
-			ssize_t rc;
+		show_var_path(load_option, boot->data_size);
 
-			pathlen = efi_loadopt_pathlen(load_option,
-						      boot->data_size);
-			dp = efi_loadopt_path(load_option, boot->data_size);
-			rc = efidp_format_device_path(text_path, text_path_len,
-						      dp, pathlen);
-			if (rc < 0)
-				error(18, "Could not parse device path");
-			rc += 1;
-
-			text_path_len = rc;
-			text_path = calloc(1, rc);
-			if (!text_path)
-				error(19, "Could not parse device path");
-
-			rc = efidp_format_device_path(text_path, text_path_len,
-						      dp, pathlen);
-			if (rc < 0)
-				error(20, "Could not parse device path");
-			printf("\t%s", text_path);
-			free(text_path);
-			/* Print optional data */
-
-			rc = efi_loadopt_optional_data(load_option,
-							   boot->data_size,
-							   &optional_data,
-							   &optional_data_len);
-			if (rc < 0)
-				error(21, "Could not parse optional data");
-
-			if (opts.unicode) {
-				text_path = ucs2_to_utf8((uint16_t*)optional_data, optional_data_len/2);
-			} else {
-				rc = unparse_raw_text(NULL, 0, optional_data,
-						      optional_data_len);
-				if (rc < 0)
-					error(22, "Could not parse optional data");
-				rc += 1;
-				text_path_len = rc;
-				text_path = calloc(1, rc);
-				if (!text_path)
-					error(23, "Could not parse optional data");
-				rc = unparse_raw_text(text_path, text_path_len,
-						      optional_data, optional_data_len);
-				if (rc < 0)
-					error(24, "Could not parse device path");
-			}
-			printf("%s", text_path);
-			free(text_path);
-		}
-		printf("\n");
 		fflush(stdout);
 	}
 }
@@ -1034,73 +1180,88 @@ show_order(const char *name)
 	free(order);
 }
 
+static var_entry_t *
+get_entry(list_t *entries, uint16_t num)
+{
+	list_t *pos;
+	var_entry_t *entry = NULL;
+
+	list_for_each(pos, entries) {
+		entry = list_entry(pos, var_entry_t, list);
+		if (entry->num != num) {
+			entry = NULL;
+			continue;
+		}
+	}
+
+	return entry;
+}
+
+static int
+update_entry_attr(var_entry_t *entry, uint64_t attr, bool set)
+{
+	efi_load_option *load_option;
+	uint64_t attrs;
+	int rc;
+
+	load_option = (efi_load_option *)entry->data;
+	attrs = efi_loadopt_attrs(load_option);
+
+	if ((set && (attrs & attr)) || (!set && !(attrs & attr)))
+		return 0;
+
+	if (set)
+		efi_loadopt_attr_set(load_option, attr);
+	else
+		efi_loadopt_attr_clear(load_option, attr);
+
+	rc = efi_set_variable(entry->guid, entry->name,
+			      entry->data, entry->data_size,
+			      entry->attributes, 0644);
+	if (rc < 0) {
+		char *guid = NULL;
+		int err = errno;
+
+		efi_guid_to_str(&entry->guid, &guid);
+		errno = err;
+		efi_error("efi_set_variable(%s,%s,...)",
+			  guid, entry->name);
+	}
+
+	return rc;
+}
+
 static int
 set_active_state(const char *prefix)
 {
-	list_t *pos;
 	var_entry_t *entry;
-	efi_load_option *load_option;
-	int rc;
 
-	list_for_each(pos, &entry_list) {
-		entry = list_entry(pos, var_entry_t, list);
-		load_option = (efi_load_option *)entry->data;
-		if (entry->num != opts.num)
-			continue;
-
-		if (opts.active == 1) {
-			if (efi_loadopt_attrs(load_option)
-						& LOAD_OPTION_ACTIVE) {
-				return 0;
-			} else {
-				efi_loadopt_attr_set(load_option,
-							LOAD_OPTION_ACTIVE);
-				rc = efi_set_variable(entry->guid,
-						      entry->name,
-						      entry->data,
-						      entry->data_size,
-						      entry->attributes,
-						      0644);
-				if (rc < 0) {
-					char *guid = NULL;
-					int err = errno;
-					efi_guid_to_str(&entry->guid, &guid);
-					errno = err;
-					efi_error(
-					  "efi_set_variable(%s,%s,...)",
-					  guid, entry->name);
-				}
-				return rc;
-			}
-		} else if (opts.active == 0) {
-			if (!(efi_loadopt_attrs(load_option)
-						& LOAD_OPTION_ACTIVE)) {
-				return 0;
-			} else {
-				efi_loadopt_attr_clear(load_option,
-							LOAD_OPTION_ACTIVE);
-				rc = efi_set_variable(entry->guid,
-						      entry->name,
-						      entry->data,
-						      entry->data_size,
-						      entry->attributes,
-						      0644);
-				if (rc < 0) {
-					char *guid = NULL;
-					int err = errno;
-					efi_guid_to_str(&entry->guid, &guid);
-					errno = err;
-					efi_error("efi_set_variable(%s,%s,...)",
-						  guid, entry->name);
-				}
-				return rc;
-			}
-		}
+	entry = get_entry(&entry_list, opts.num);
+	if (!entry) {
+		/* if we reach here then the number supplied was not found */
+		warnx("%s entry %x not found", prefix, opts.num);
+		errno = ENOENT;
+		return -1;
 	}
-	/* if we reach here then the number supplied was not found */
-	warnx("%s entry %x not found", prefix, opts.num);
-	errno = ENOENT;
-	return -1;
+
+	return update_entry_attr(entry, LOAD_OPTION_ACTIVE, opts.active);
+}
+
+static int
+set_force_reconnect(const char *prefix)
+{
+	var_entry_t *entry;
+
+	entry = get_entry(&entry_list, opts.num);
+	if (!entry) {
+		/* if we reach here then the number supplied was not found */
+		warnx("%s entry %x not found", prefix, opts.num);
+		errno = ENOENT;
+		return -1;
+	}
+
+	return update_entry_attr(entry, LOAD_OPTION_FORCE_RECONNECT,
+				 opts.reconnect > 0);
 }
 
 static int
@@ -1233,46 +1394,43 @@ usage()
 {
 	printf("efibootmgr version %s\n", EFIBOOTMGR_VERSION);
 	printf("usage: efibootmgr [options]\n");
-	printf("\t-a | --active         sets bootnum active\n");
-	printf("\t-A | --inactive       sets bootnum inactive\n");
-	printf("\t-b | --bootnum XXXX   modify BootXXXX (hex)\n");
-	printf("\t-B | --delete-bootnum delete bootnum\n");
-	printf("\t-c | --create         create new variable bootnum and add to bootorder\n");
-	printf("\t-C | --create-only	create new variable bootnum and do not add to bootorder\n");
-	printf("\t-D | --remove-dups	remove duplicate values from BootOrder\n");
-	printf("\t-d | --disk disk       (defaults to /dev/sda) containing loader\n");
-	printf("\t-r | --driver         Operate on Driver variables, not Boot Variables.\n");
-	printf("\t-e | --edd [1|3|-1]   force EDD 1.0 or 3.0 creation variables, or guess\n");
-	printf("\t-E | --device num      EDD 1.0 device number (defaults to 0x80)\n");
-	printf("\t-g | --gpt            force disk with invalid PMBR to be treated as GPT\n");
-	printf("\t-i | --iface name     create a netboot entry for the named interface\n");
-#if 0
-	printf("\t     --ip-addr <local>,<remote>	set local and remote IP addresses\n");
-	printf("\t     --ip-gateway <gateway>	set the network gateway\n");
-	printf("\t     --ip-netmask <netmask>	set the netmask or prefix length\n");
-	printf("\t     --ip-proto TCP|UDP	set the IP protocol to be used\n");
-	printf("\t     --ip-port <local>,<remote>	set local and remote IP ports\n");
-	printf("\t     --ip-origin { {dhcp|static} | { static|stateless|stateful} }\n");
-#endif
-	printf("\t-l | --loader name     (defaults to \""DEFAULT_LOADER"\")\n");
-	printf("\t-L | --label label     Boot manager display label (defaults to \"Linux\")\n");
-	printf("\t-m | --mirror-below-4G t|f mirror memory below 4GB\n");
-	printf("\t-M | --mirror-above-4G X percentage memory to mirror above 4GB\n");
-	printf("\t-n | --bootnext XXXX   set BootNext to XXXX (hex)\n");
-	printf("\t-N | --delete-bootnext delete BootNext\n");
-	printf("\t-o | --bootorder XXXX,YYYY,ZZZZ,...     explicitly set BootOrder (hex)\n");
-	printf("\t-O | --delete-bootorder delete BootOrder\n");
-	printf("\t-p | --part part        partition containing loader (defaults to 1 on partitioned devices)\n");
-	printf("\t-q | --quiet            be quiet\n");
-	printf("\t-t | --timeout seconds  set boot manager timeout waiting for user input.\n");
-	printf("\t-T | --delete-timeout   delete Timeout.\n");
-	printf("\t-u | --unicode | --UCS-2  handle extra args as UCS-2 (default is ASCII)\n");
-	printf("\t-v | --verbose          print additional information\n");
-	printf("\t-V | --version          return version and exit\n");
-	printf("\t-w | --write-signature  write unique sig to MBR if needed\n");
+	printf("\t-a | --active         Set bootnum active.\n");
+	printf("\t-A | --inactive       Set bootnum inactive.\n");
+	printf("\t-b | --bootnum XXXX   Modify BootXXXX (hex).\n");
+	printf("\t-B | --delete-bootnum Delete bootnum.\n");
+	printf("\t-c | --create         Create new variable bootnum and add to bootorder at index (-I).\n");
+	printf("\t-C | --create-only    Create new variable bootnum and do not add to bootorder.\n");
+	printf("\t-d | --disk disk      Disk containing boot loader (defaults to /dev/sda).\n");
+	printf("\t-D | --remove-dups    Remove duplicate values from BootOrder.\n");
+	printf("\t-e | --edd [1|3]      Force boot entries to be created using EDD 1.0 or 3.0 info.\n");
+	printf("\t-E | --device num     EDD 1.0 device number (defaults to 0x80).\n");
+	printf("\t     --full-dev-path  Use a full device path.\n");
+	printf("\t     --file-dev-path  Use an abbreviated File() device path.\n");
+	printf("\t-f | --reconnect      Re-connect devices after driver is loaded.\n");
+	printf("\t-F | --no-reconnect   Do not re-connect devices after driver is loaded.\n");
+	printf("\t-g | --gpt            Force disk with invalid PMBR to be treated as GPT.\n");
+	printf("\t-i | --iface name     Create a netboot entry for the named interface.\n");
+	printf("\t-I | --index number   When creating an entry, insert it in bootorder at specified position (default: 0).\n");
+	printf("\t-l | --loader name     (Defaults to \""DEFAULT_LOADER"\").\n");
+	printf("\t-L | --label label     Boot manager display label (defaults to \"Linux\").\n");
+	printf("\t-m | --mirror-below-4G t|f Mirror memory below 4GB.\n");
+	printf("\t-M | --mirror-above-4G X Percentage memory to mirror above 4GB.\n");
+	printf("\t-n | --bootnext XXXX   Set BootNext to XXXX (hex).\n");
+	printf("\t-N | --delete-bootnext Delete BootNext.\n");
+	printf("\t-o | --bootorder XXXX,YYYY,ZZZZ,...     Explicitly set BootOrder (hex).\n");
+	printf("\t-O | --delete-bootorder Delete BootOrder.\n");
+	printf("\t-p | --part part        Partition containing loader (defaults to 1 on partitioned devices).\n");
+	printf("\t-q | --quiet            Be quiet.\n");
+	printf("\t-r | --driver           Operate on Driver variables, not Boot Variables.\n");
+	printf("\t-t | --timeout seconds  Set boot manager timeout waiting for user input.\n");
+	printf("\t-T | --delete-timeout   Delete Timeout.\n");
+	printf("\t-u | --unicode | --UCS-2  Handle extra args as UCS-2 (default is ASCII).\n");
+	printf("\t-v | --verbose          Print additional information.\n");
+	printf("\t-V | --version          Return version and exit.\n");
+	printf("\t-w | --write-signature  Write unique sig to MBR if needed.\n");
 	printf("\t-y | --sysprep          Operate on SysPrep variables, not Boot Variables.\n");
-	printf("\t-@ | --append-binary-args file  append extra args from file (use \"-\" for stdin)\n");
-	printf("\t-h | --help             show help/usage\n");
+	printf("\t-@ | --append-binary-args file  Append extra args from file (use \"-\" for stdin).\n");
+	printf("\t-h | --help             Show help/usage.\n");
 }
 
 static void
@@ -1282,6 +1440,7 @@ set_default_opts()
 	opts.num             = -1;   /* auto-detect */
 	opts.bootnext        = -1;   /* Don't set it */
 	opts.active          = -1;   /* Don't set it */
+	opts.reconnect       = -1;   /* Don't set it */
 	opts.timeout         = -1;   /* Don't set it */
 	opts.edd10_devicenum = 0x80;
 	opts.loader          = DEFAULT_LOADER;
@@ -1298,6 +1457,7 @@ parse_opts(int argc, char **argv)
 	int snum;
 	float fnum;
 	int option_index = 0;
+	long lindex;
 
 	while (1)
 	{
@@ -1310,12 +1470,18 @@ parse_opts(int argc, char **argv)
 			{"delete-bootnum",         no_argument, 0, 'B'},
 			{"create",                 no_argument, 0, 'c'},
 			{"create-only",            no_argument, 0, 'C'},
-			{"remove-dups",            no_argument, 0, 'D'},
 			{"disk",             required_argument, 0, 'd'},
-			{"iface",            required_argument, 0, 'i'},
-			{"edd-device",       required_argument, 0, 'E'},
+			{"remove-dups",            no_argument, 0, 'D'},
+			{"edd",              required_argument, 0, 'e'},
 			{"edd30",            required_argument, 0, 'e'},
+			{"edd-device",       required_argument, 0, 'E'},
+			{"full-dev-path",          no_argument, 0, 0},
+			{"file-dev-path",          no_argument, 0, 0},
+			{"reconnect",              no_argument, 0, 'f'},
+			{"no-reconnect",           no_argument, 0, 'F'},
 			{"gpt",                    no_argument, 0, 'g'},
+			{"iface",            required_argument, 0, 'i'},
+			{"index",            required_argument, 0, 'I'},
 			{"keep",                   no_argument, 0, 'k'},
 			{"loader",           required_argument, 0, 'l'},
 			{"label",            required_argument, 0, 'L'},
@@ -1327,6 +1493,7 @@ parse_opts(int argc, char **argv)
 			{"delete-bootorder",       no_argument, 0, 'O'},
 			{"part",             required_argument, 0, 'p'},
 			{"quiet",                  no_argument, 0, 'q'},
+			{"driver",                 no_argument, 0, 'r'},
 			{"timeout",          required_argument, 0, 't'},
 			{"delete-timeout",         no_argument, 0, 'T'},
 			{"unicode",                no_argument, 0, 'u'},
@@ -1334,22 +1501,19 @@ parse_opts(int argc, char **argv)
 			{"verbose",          optional_argument, 0, 'v'},
 			{"version",                no_argument, 0, 'V'},
 			{"write-signature",        no_argument, 0, 'w'},
-			{"append-binary-args", required_argument, 0, '@'},
-			{"driver",                 no_argument, 0, 'r'},
 			{"sysprep",                no_argument, 0, 'y'},
+			{"append-binary-args", required_argument, 0, '@'},
 			{"help",                   no_argument, 0, 'h'},
 			{0, 0, 0, 0}
 		};
 
-		c = getopt_long (argc, argv,
-				 "AaBb:cCDd:e:E:gH:i:l:L:M:m:n:No:Op:qt:TuU:v::Vw"
-				 "@:hry",
-				 long_options, &option_index);
+		c = getopt_long(argc, argv,
+				"aAb:BcCd:De:E:fFgi:kl:L:m:M:n:No:Op:qrt:Tuv::Vwy@:h",
+				long_options, &option_index);
 		if (c == -1)
 			break;
 
-		switch (c)
-		{
+		switch (c) {
 		case '@':
 			opts.extra_opts_file = optarg;
 			break;
@@ -1365,6 +1529,13 @@ parse_opts(int argc, char **argv)
 		case 'b': {
 			char *endptr = NULL;
 			unsigned long result;
+
+			if (!optarg) {
+				errorx(29, "--%s requires an argument",
+				       long_options[option_index]);
+				break;
+			}
+
 			result = strtoul(optarg, &endptr, 16);
 			if ((result == ULONG_MAX && errno == ERANGE) ||
 					(endptr && *endptr != '\0')) {
@@ -1372,7 +1543,7 @@ parse_opts(int argc, char **argv)
 					       - (intptr_t)optarg;
 				print_error_arrow(optarg, offset,
 						  "Invalid bootnum value");
-				conditional_error_reporter(opts.verbose >= 2,
+				conditional_error_reporter(opts.verbose >= 1,
 							   1);
 				exit(28);
 			}
@@ -1398,15 +1569,19 @@ parse_opts(int argc, char **argv)
 			break;
 		case 'e':
 			rc = sscanf(optarg, "%d", &snum);
-			if (rc == 1)
-				opts.edd_version = snum;
-			else
+			if (rc != 1)
 				errorx(30, "invalid numeric value %s\n",
 				       optarg);
-			if (snum == -1)
-				snum = 0;
-			if (snum != 0 && snum != 1 && snum != 3)
+
+			if (snum != EFIBOOTMGR_PATH_ABBREV_EDD10 &&
+			    snum != EFIBOOTMGR_PATH_ABBREV_NONE)
 				errorx(31, "invalid EDD version %d\n", snum);
+
+			if (opts.abbreviate_path != EFIBOOTMGR_PATH_ABBREV_UNSPECIFIED &&
+			    opts.abbreviate_path != snum)
+				errx(41, "contradicting --full-device-path/--file-device-path/-e options");
+
+			opts.abbreviate_path = snum;
 			break;
 		case 'E':
 			rc = sscanf(optarg, "%x", &num);
@@ -1414,6 +1589,12 @@ parse_opts(int argc, char **argv)
 				opts.edd10_devicenum = num;
 			else
 				errorx(32, "invalid hex value %s\n", optarg);
+			break;
+		case 'f':
+			opts.reconnect = 1;
+			break;
+		case 'F':
+			opts.reconnect = 0;
 			break;
 		case 'g':
 			opts.forcegpt = 1;
@@ -1429,6 +1610,18 @@ parse_opts(int argc, char **argv)
 			opts.ip_version = EFIBOOTMGR_IPV4;
 			opts.ip_addr_origin = EFIBOOTMGR_IPV4_ORIGIN_DHCP;
 			break;
+		case 'I':
+			if (!optarg) {
+				errorx(1, "--%s requires an argument",
+				       long_options[option_index]);
+			}
+			lindex = atol(optarg);
+			if (lindex < 0 || lindex > UINT16_MAX) {
+				errorx(1, "invalid numeric value %s\n",
+				       optarg);
+			}
+			opts.index = (uint16_t)lindex;
+			break;
 		case 'k':
 			opts.keep_old_entries = 1;
 			break;
@@ -1437,9 +1630,18 @@ parse_opts(int argc, char **argv)
 			break;
 		case 'L':
 			opts.label = (unsigned char *)optarg;
+			opts.explicit_label = 1;
 			break;
 		case 'm':
+
+			if (!optarg) {
+				errorx(33, "--%s requires an argument",
+				       long_options[option_index]);
+				break;
+			}
+
 			opts.set_mirror_lo = 1;
+
 			switch (optarg[0]) {
 			case '1': case 'y': case 't':
 				opts.below4g = 1;
@@ -1468,6 +1670,13 @@ parse_opts(int argc, char **argv)
 		case 'n': {
 			char *endptr = NULL;
 			unsigned long result;
+
+			if (!optarg) {
+				errorx(36, "--%s requires an argument",
+				       long_options[option_index]);
+				break;
+			}
+
 			result = strtoul(optarg, &endptr, 16);
 			if ((result == ULONG_MAX && errno == ERANGE) ||
 					(endptr && *endptr != '\0')) {
@@ -1475,7 +1684,7 @@ parse_opts(int argc, char **argv)
 					       - (intptr_t)optarg;
 				print_error_arrow(optarg, offset,
 						  "Invalid BootNext value");
-				conditional_error_reporter(opts.verbose >= 2,
+				conditional_error_reporter(opts.verbose >= 1,
 							   1);
 				exit(35);
 			}
@@ -1525,9 +1734,9 @@ parse_opts(int argc, char **argv)
 			opts.verbose += 1;
 			if (optarg) {
 				if (!strcmp(optarg, "v"))
-					opts.verbose = 2;
+					opts.verbose = 1;
 				if (!strcmp(optarg, "vv"))
-					opts.verbose = 3;
+					opts.verbose = 2;
 				rc = sscanf(optarg, "%u", &num);
 				if (rc == 1)
 					opts.verbose = num;
@@ -1536,10 +1745,7 @@ parse_opts(int argc, char **argv)
 					       "invalid numeric value %s\n",
 					       optarg);
 			}
-                        /* XXX efivar-36 accidentally doesn't have a public
-                         * header for this */
-			extern int efi_set_verbose(int verbosity, FILE *errlog);
-			efi_set_verbose(opts.verbose - 2, stderr);
+			efi_set_verbose(opts.verbose - 1, stderr);
 			break;
 		case 'V':
 			opts.showversion = 1;
@@ -1554,8 +1760,20 @@ parse_opts(int argc, char **argv)
 			break;
 
 		default:
-			usage();
-			exit(1);
+			if (!strcmp(long_options[option_index].name, "full-dev-path")) {
+				if (opts.abbreviate_path != EFIBOOTMGR_PATH_ABBREV_UNSPECIFIED &&
+				    opts.abbreviate_path != EFIBOOTMGR_PATH_ABBREV_NONE)
+					errx(41, "contradicting --full-dev-path/--file-dev-path/-e options");
+				opts.abbreviate_path = EFIBOOTMGR_PATH_ABBREV_NONE;
+			} else if (!strcmp(long_options[option_index].name, "file-dev-path")) {
+				if (opts.abbreviate_path != EFIBOOTMGR_PATH_ABBREV_UNSPECIFIED &&
+				    opts.abbreviate_path != EFIBOOTMGR_PATH_ABBREV_FILE)
+					errx(41, "contradicting --full-dev-path/--file-dev-path/-e options");
+				opts.abbreviate_path = EFIBOOTMGR_PATH_ABBREV_FILE;
+			} else {
+				usage();
+				exit(1);
+			}
 		}
 	}
 
@@ -1613,6 +1831,9 @@ main(int argc, char **argv)
 			mode = driver;
 	}
 
+	if (opts.reconnect > 0 && !opts.driver)
+		errorx(30, "--reconnect is supported only for driver entries.");
+
 	if (!efi_variables_supported())
 		errorx(2, "EFI variables are not supported on this system.");
 
@@ -1622,26 +1843,45 @@ main(int argc, char **argv)
 	set_var_nums(prefices[mode], &entry_list);
 
 	if (opts.delete) {
-		if (opts.num == -1)
-			errorx(3, "You must specify an entry to delete "
-				"(see the -b option).");
-		else {
-			ret = delete_var(prefices[mode], opts.num);
-			if (ret < 0)
-				error(15, "Could not delete variable");
+		if (opts.num == -1 && opts.explicit_label == 0) {
+			errorx(3,
+			       "You must specify an entry to delete (see the -b option or -L option).");
+		} else {
+			if (opts.num != -1) {
+				ret = delete_var(prefices[mode], opts.num);
+				if (ret < 0)
+					error(15, "Could not delete variable");
+			} else {
+				ret = delete_label(prefices[mode], opts.label);
+				if (ret < 0)
+					errorx(15, "Could not delete variable");
+			}
 		}
 	}
 
 	if (opts.active >= 0) {
 		if (opts.num == -1) {
 			errorx(4,
-			       "You must specify a entry to activate (see the -b option");
+			       "You must specify a entry to activate (see the -b option)");
 		} else {
 			ret = set_active_state(prefices[mode]);
 			if (ret < 0)
-				error(16, "%s",
+				error(16,
 				  "Could not set active state for %s%04X",
 				  prefices[mode], opts.num);
+		}
+	}
+
+	if (opts.reconnect >= 0) {
+		if (opts.num == -1) {
+			errorx(4,
+			       "You must specify a driver entry to set re-connect on (see the -b option)");
+		} else {
+			ret = set_force_reconnect(prefices[mode]);
+			if (ret < 0)
+				error(16,
+				      "Could not set re-connect for %s%04X",
+				      prefices[mode], opts.num);
 		}
 	}
 
@@ -1654,11 +1894,14 @@ main(int argc, char **argv)
 
 		/* Put this boot var in the right Order variable */
 		if (new_entry && !opts.no_order) {
-			ret = add_to_order(order_name[mode], new_entry->num);
+			ret = add_to_order(order_name[mode], new_entry->num,
+					   opts.index);
 			if (ret < 0)
 				error(6, "Could not add entry to %s",
 				      order_name[mode]);
 		}
+	} else if (opts.index) {
+		error(1, "Index is meaningless without create");
 	}
 
 	if (opts.delete_order) {
@@ -1678,7 +1921,8 @@ main(int argc, char **argv)
 	if (opts.deduplicate) {
 		ret = remove_dupes_from_order(order_name[mode]);
 		if (ret)
-			error(9, "Could not set %s", order_name[mode]);
+			error(9, "Could not remove duplicates from %s order",
+			      order_name[mode]);
 	}
 
 	if (opts.delete_bootnext) {
@@ -1751,4 +1995,3 @@ main(int argc, char **argv)
 		return 1;
 	return 0;
 }
-

@@ -21,11 +21,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <uchar.h>
 #include <unistd.h>
 
 #include "error.h"
-#include "unparse_path.h"
+#include "parse_loader_data.h"
 
 int verbose;
 
@@ -69,8 +68,8 @@ print_boot_entry(efi_load_option *loadopt, size_t data_size)
 	text_path = alloca(text_path_len);
 	if (!text_path)
 		error(100, "Couldn't allocate memory");
-	rc = efidp_format_device_path(text_path, text_path_len,
-				      dp, pathlen);
+	rc = efidp_format_device_path((unsigned char *)text_path,
+				      text_path_len, dp, pathlen);
 	if (rc < 0) {
 		printf("<bad device path>");
 		return;
@@ -85,7 +84,7 @@ print_boot_entry(efi_load_option *loadopt, size_t data_size)
 		return;
 	}
 
-	rc = unparse_raw_text(NULL, 0, optional_data, optional_data_len);
+	rc = parse_raw_text(NULL, 0, optional_data, optional_data_len);
 	if (rc < 0) {
 		printf("<bad optional data>");
 		return;
@@ -96,7 +95,7 @@ print_boot_entry(efi_load_option *loadopt, size_t data_size)
 	if (!raw)
 		error(101, "Couldn't allocate memory");
 
-	rc = unparse_raw_text(raw, raw_len, optional_data, optional_data_len);
+	rc = parse_raw_text(raw, raw_len, optional_data, optional_data_len);
 	if (rc < 0) {
 		printf("<bad optional data>");
 	} else if (rc > 0) {

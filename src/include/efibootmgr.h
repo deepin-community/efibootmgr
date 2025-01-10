@@ -30,6 +30,12 @@
 #define EFIBOOTMGR_IPV6_ORIGIN_STATELESS	1
 #define EFIBOOTMGR_IPV6_ORIGIN_STATEFUL		2
 
+#define EFIBOOTMGR_PATH_ABBREV_UNSPECIFIED	0
+#define EFIBOOTMGR_PATH_ABBREV_EDD10		1
+#define EFIBOOTMGR_PATH_ABBREV_HD		2
+#define EFIBOOTMGR_PATH_ABBREV_NONE		3
+#define EFIBOOTMGR_PATH_ABBREV_FILE		4
+
 typedef enum {
 	boot,
 	driver,
@@ -61,12 +67,13 @@ typedef struct {
 	char *testfile;
 	char *extra_opts_file;
 	uint32_t part;
-	int edd_version;
+	int abbreviate_path;
 	uint32_t edd10_devicenum;
 	int num;
 	int bootnext;
 	int verbose;
 	int active;
+	int reconnect;
 	int below4g;
 	int above4g;
 	int deduplicate;
@@ -86,7 +93,9 @@ typedef struct {
 	unsigned int no_order:1;
 	unsigned int driver:1;
 	unsigned int sysprep:1;
+	unsigned int explicit_label:1;
 	short int timeout;
+	uint16_t index;
 } efibootmgr_opt_t;
 
 extern efibootmgr_opt_t opts;

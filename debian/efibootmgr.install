@@ -1,2 +1,2 @@
-src/efibootmgr bin
-src/efibootdump bin
+src/efibootmgr usr/bin
+src/efibootdump usr/bin

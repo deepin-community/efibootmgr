@@ -132,180 +132,29 @@ read_boot_var_names(char ***namelist)
 	return read_var_names("Boot", namelist);
 }
 
-#if 0
 static int
-get_virt_pci(char *name, unsigned char *bus,
-		unsigned char *device, unsigned char *function)
+get_path_options(void)
 {
-	char inbuf[64], outbuf[128];
-	ssize_t lnksz;
-
-	if (snprintf(inbuf, sizeof inbuf, "/sys/bus/virtio/devices/%s",
-			name) >= (ssize_t)(sizeof inbuf)) {
-		return -1;
-	}
-
-	lnksz = readlink(inbuf, outbuf, sizeof outbuf);
-	if (lnksz == -1 || lnksz == sizeof outbuf) {
-		return -1;
-	}
-
-	outbuf[lnksz] = '\0';
-	if (sscanf(outbuf, "../../../devices/pci0000:00/0000:%hhx:%hhx.%hhx",
-			bus, device, function) != 3) {
-		return -1;
-	}
-	return 0;
-}
-
-/**
- * make_net_load_option()
- * @iface - interface name (input)
- * @buf - buffer to write structure to
- * @size - size of buf
- *
- * Returns -1 on error, size written on success, or size needed if size == 0.
- */
-static ssize_t
-make_net_load_option(char *iface, uint8_t *buf, size_t size)
-{
-	/* copied pretty much verbatim from the ethtool source */
-	int fd = 0, err;
-	unsigned char bus, slot, func;
-	struct ifreq ifr;
-	struct ethtool_drvinfo drvinfo;
-	ssize_t needed;
-	off_t buf_offset;
-
-	memset(&ifr, 0, sizeof(ifr));
-	strcpy(ifr.ifr_name, iface);
-	drvinfo.cmd = ETHTOOL_GDRVINFO;
-	ifr.ifr_data = (caddr_t)&drvinfo;
-	/* Open control socket */
-	fd = socket(AF_INET, SOCK_DGRAM, 0);
-	if (fd < 0) {
-		perror("Cannot get control socket");
-		return -1;
-	}
-	err = ioctl(fd, SIOCETHTOOL, &ifr);
-	if (err < 0) {
-		perror("Cannot get driver information");
-		close(fd);
-		return -1;
-	}
-
-	if (strncmp(drvinfo.bus_info, "virtio", 6) == 0) {
-		err = get_virt_pci(drvinfo.bus_info, &bus, &slot, &func);
-		if (err < 0) {
-			close(fd);
-			return err;
-		}
-	} else {
-		/* The domain part was added in 2.6 kernels.
-		 * Test for that first. */
-		err = sscanf(drvinfo.bus_info, "%*x:%hhx:%hhx.%hhx",
-						&bus, &slot, &func);
-		if (err != 3) {
-			err = sscanf(drvinfo.bus_info, "%hhx:%hhx.%hhx",
-						&bus, &slot, &func);
-			if (err != 3) {
-				perror("Couldn't parse device location string.");
-				close(fd);
-				return -1;
-			}
-		}
-	}
-
-	err = ioctl(fd, SIOCGIFHWADDR, &ifr);
-	if (err < 0) {
-		close(fd);
-		perror("Cannot get hardware address.");
-		return -1;
-	}
-
-	buf_offset = 0;
-	needed = efidp_make_acpi_hid(buf, size?size-buf_offset:0,
-				     opts.acpi_hid, opts.acpi_uid);
-	if (needed < 0) {
-err_needed:
-		close(fd);
-		return needed;
-	}
-	buf_offset += needed;
-
-	needed = make_pci_device_path(bus, (uint8_t)slot, (uint8_t)func,
-					buf + buf_offset,
-					size == 0 ? 0 : size - buf_offset);
-	if (needed < 0)
-		goto err_needed;
-	buf_offset += needed;
-
-	needed = efidp_make_mac_addr(buf, size?size-buf_offset:0,
-				     ifr.ifr_ifru.ifru_hwaddr.sa_family,
-				     (uint8_t*)ifr.ifr_ifru.ifru_hwaddr.sa_data,
-				     sizeof (ifr.ifr_ifru.ifru_hwaddr.sa_data));
-	if (needed < 0)
-		goto err_needed;
-	buf_offset += needed;
-
-	if (opts.ipv4) {
-		needed = make_ipv4_addr_device_path(fd, );
-		if (needed < 0)
-			goto err_needed;
-		buf_offset += needed;
-	}
-
-	if (opts.ipv6) {
-		needed = make_ipv6_addr_device_path(fd, );
-		if (needed < 0)
-			goto err_needed;
-		buf_offset += needed;
-	}
-	close(fd);
-
-	needed = efidp_make_end_entire(buf,size?size-buf_offset:0);
-	if (needed < 0)
-		return needed;
-	buf_offset += needed;
-
-	return buf_offset;
-}
-#endif
-
-static int
-get_edd_version(void)
-{
-	efi_guid_t guid = BLKX_UNKNOWN_GUID;
-	uint8_t *data = NULL;
-	size_t data_size = 0;
-	uint32_t attributes;
-	efidp_header *path;
-	int rc = 0;
-
-	/* Allow global user option override */
-
-	switch (opts.edd_version)
+	switch (opts.abbreviate_path)
 	{
-	case 0: /* No EDD information */
-		return 0;
-	case 1: /* EDD 1.0 */
-		return 1;
-	case 3: /* EDD 3.0 */
-		return 3;
+	case EFIBOOTMGR_PATH_ABBREV_EDD10:
+		/* EDD 1.0 */
+		return EFIBOOT_ABBREV_EDD10;
+	case EFIBOOTMGR_PATH_ABBREV_NONE:
+		/* EDD 3.0+, which we actually just ignore, because we don't
+		 * actually *have* edd, and can't actually derive a path from
+		 * anything. */
+		return EFIBOOT_ABBREV_NONE;
+	case EFIBOOTMGR_PATH_ABBREV_FILE:
+		/* Abbreviate to a file path */
+		return EFIBOOT_ABBREV_FILE;
+	case EFIBOOTMGR_PATH_ABBREV_UNSPECIFIED:
+	case EFIBOOTMGR_PATH_ABBREV_HD:
 	default:
-		break;
+		/* Abbreviate to an HD path */
+		return EFIBOOT_ABBREV_HD;
 	}
-
-	rc = efi_get_variable(guid, "blk0", &data, &data_size, &attributes);
-	if (rc < 0)
-		return rc;
-
-	path = (efidp_header *)data;
-	if (path->type == 2 && path->subtype == 1)
-		return 3;
-	return 1;
 }
-
 
 /**
  * make_linux_load_option()
@@ -319,7 +168,8 @@ make_linux_load_option(uint8_t **data, size_t *data_size,
 		       uint8_t *optional_data, size_t optional_data_size)
 {
 	ssize_t needed;
-	uint32_t attributes = opts.active ? LOAD_OPTION_ACTIVE : 0;
+	uint32_t attributes = opts.active ? LOAD_OPTION_ACTIVE : 0
+			    | (opts.reconnect > 0 ? LOAD_OPTION_FORCE_RECONNECT : 0);
 	int saved_errno;
 	efidp dp = NULL;
 
@@ -363,23 +213,9 @@ make_linux_load_option(uint8_t **data, size_t *data_size,
 		errno = ENOSYS;
 		return -1;
 	} else {
-		uint32_t options = EFIBOOT_ABBREV_HD;
-		int edd;
+		uint32_t options;
 
-		/* there's really no telling if this is even the right disk,
-		 * but... I also never see blk0 exported to runtime on any
-		 * hardware, so it probably only happens on some old itanium
-		 * box from the beginning of time anyway. */
-		edd = get_edd_version();
-
-		switch (edd) {
-		case 1:
-			options = EFIBOOT_ABBREV_EDD10;
-			break;
-		case 3:
-			options = EFIBOOT_ABBREV_NONE;
-			break;
-		}
+		options = get_path_options();
 
 		needed = efi_generate_file_device_path_from_esp(NULL, 0,
 						opts.disk, opts.part,
