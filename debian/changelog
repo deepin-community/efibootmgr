@@ -1,8 +1,19 @@
-efibootmgr (17-2deepin1) unstable; urgency=medium
+efibootmgr (18-2) unstable; urgency=medium
 
-  * Add loong64 support
+  [ Chris Hofstaedtler ]
+  * Install into usrmerged layout. Closes #1073688
 
- -- Han Gao <gaohan@deepin.org>  Tue, 31 Jan 2023 19:41:58 +0800
+ -- Steve McIntyre <93sam@debian.org>  Mon, 15 Jul 2024 00:59:05 +0100
+
+efibootmgr (18-1) unstable; urgency=medium
+
+  [ Steve McIntyre ]
+  * New upstream version (18)
+    + Remove old patch, no longer needed.
+  * Switch build to be arch:any. The build-dep on libefivar-dev will
+    limit things to supported EFI platforms.
+
+ -- Steve McIntyre <93sam@debian.org>  Mon, 06 Nov 2023 00:14:02 +0000
 
 efibootmgr (17-2) unstable; urgency=medium
 

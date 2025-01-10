@@ -8,13 +8,13 @@ include $(TOPDIR)/Make.defaults
 SUBDIR_CFLAGS = -I$(SRCDIR)/include
 
 BINTARGETS=efibootmgr efibootdump
-TARGETS=$(BINTARGETS)
+TARGETS=$(BINTARGETS) efibootmgr.8 efibootdump.8
 
 all : deps $(TARGETS)
 
-EFIBOOTMGR_SOURCES = efibootmgr.c efi.c unparse_path.c
+EFIBOOTMGR_SOURCES = efibootmgr.c efi.c parse_loader_data.c
 EFICONMAN_SOURCES = eficonman.c
-EFIBOOTDUMP_SOURCES = efibootdump.c unparse_path.c
+EFIBOOTDUMP_SOURCES = efibootdump.c parse_loader_data.c
 EFIBOOTNEXT_SOURCES = efibootnext.c
 ALL_SOURCES=$(EFIBOOTMGR_SOURCES)
 -include $(call deps-of,$(ALL_SOURCES))
@@ -31,14 +31,19 @@ efibootdump : PKGS=efivar efiboot popt
 efibootnext : $(call objects-of,$(EFIBOOTNEXT_SOURCES))
 efibootnext : PKGS=efivar efiboot popt
 
+deps : PKGS=efivar efiboot popt
 deps : $(ALL_SOURCES)
-	$(MAKE) -f $(TOPDIR)/Make.deps deps SOURCES="$(ALL_SOURCES)" SUBDIR_CFLAGS="$(SUBDIR_CFLAGS)"
+	$(MAKE) -f $(TOPDIR)/Make.deps \
+		SOURCES="$(ALL_SOURCES)" \
+		SUBDIR_CFLAGS="$(SUBDIR_CFLAGS)" \
+		PKGS="$(PKGS)" \
+		deps
 
 clean :
 	@rm -rfv *.o *.a *.so $(TARGETS)
 	@rm -rfv .*.d
 
-install :
+install : $(TARGETS)
 	$(INSTALL) -d -m 755 $(DESTDIR)/$(sbindir)/
 	$(INSTALL) -m 755 efibootmgr $(DESTDIR)/$(sbindir)/efibootmgr
 	$(INSTALL) -m 755 efibootdump $(DESTDIR)/$(sbindir)/efibootdump

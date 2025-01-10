@@ -1,10 +1,10 @@
-.TH "EFIBOOTMGR" "8" "26 December 2017" "" ""
+.TH "EFIBOOTMGR" "8" "28 September 2021" "" ""
 
 .SH NAME
-efibootmgr \- manipulate the UEFI Boot Manager
+efibootmgr \- change the UEFI Boot Manager configuration
 .SH SYNOPSIS
 
-\fBefibootmgr\fR [ \fB-a\fR ] [ \fB-A\fR ] [ \fB-b \fIXXXX\fB\fR ] [ \fB-r\fR | \fB-y\fR ] [ \fB-B\fR ] [ \fB-c\fR ] [ \fB-d \fIDISK\fB\fR ] [ \fB-D\fR ] [ \fB-e \fI1|3|-1\fB\fR ] [ \fB-E \fINUM\fB\fR ] [ \fB-g\fR ] [ \fB-i \fINAME\fB\fR ] [ \fB-l \fINAME\fB\fR ] [ \fB-L \fILABEL\fB\fR ] [ \fB-m \fIt|f\fB\fR ] [ \fB-M \fIX\fB\fR ] [ \fB-n \fIXXXX\fB\fR ] [ \fB-N\fR ] [ \fB-o \fIXXXX\fB,\fIYYYY\fB,\fIZZZZ\fB\fR\fI ...\fR ] [ \fB-O\fR ] [ \fB-p \fIPART\fB\fR ] [ \fB-q\fR ] [ \fB-t \fIseconds\fB\fR ] [ \fB-T\fR ] [ \fB-u\fR ] [ \fB-v\fR ] [ \fB-V\fR ] [ \fB-w\fR ] [ \fB-@ \fIfile\fB\fR ]
+\fBefibootmgr\fR [ \fB-a\fR ] [ \fB-A\fR ] [ \fB-b \fIXXXX\fB\fR ] [ \fB-B\fR ] [ \fB-c\fR ] [ \fB-d \fIDISK\fB\fR ] [ \fB-D\fR ] [ \fB-e \fI1|3|-1\fB\fR ] [ \fB-E \fINUM\fB\fR ] [ \fB--full-dev-path\fR | \fB--file-dev-path\fR ] [ \fB-f\fR ] [ \fB-F\fR ] [ \fB-g\fR ] [ \fB-i \fINAME\fB\fR ] [ \fB-l \fINAME\fB\fR ] [ \fB-L \fILABEL\fB\fR ] [ \fB-m \fIt|f\fB\fR ] [ \fB-M \fIX\fB\fR ] [ \fB-n \fIXXXX\fB\fR ] [ \fB-N\fR ] [ \fB-o \fIXXXX\fB,\fIYYYY\fB,\fIZZZZ\fB\fR\fI ...\fR ] [ \fB-O\fR ] [ \fB-p \fIPART\fB\fR ] [ \fB-q\fR ] [ \fB-r\fR | \fB-y\fR ] [ \fB-t \fIseconds\fB\fR ] [ \fB-T\fR ] [ \fB-u\fR ] [ \fB-v\fR ] [ \fB-V\fR ] [ \fB-w\fR ] [ \fB-@ \fIfile\fB\fR ]
 
 .SH "DESCRIPTION"
 .PP
@@ -26,68 +26,103 @@ non-volatile variables through
 The following is a list of options accepted by efibootmgr:
 .TP
 \fB-a | --active\fR
-Sets bootnum active
+Set bootnum active.
 .TP
 \fB-A | --inactive\fR
-Sets bootnum inactive
+Set bootnum inactive.
 .TP
 \fB-b | --bootnum \fIXXXX\fB\fR
-Modify Boot\fIXXXX\fR (hex)
+Modify Boot\fIXXXX\fR (hex).
 .TP
 \fB-B | --delete-bootnum\fR
-Delete bootnum
+Delete bootnum.
 .TP
 \fB-c | --create\fR
-Create new variable bootnum and add to bootorder
+Create new variable bootnum and add to bootorder.
+.TP
+\fB-C | --create-only\fR
+Create new variable bootnum and and do not add to bootorder.
 .TP
 \fB-d | --disk \fIDISK\fB\fR
 The disk containing the loader (defaults to
-\fI/dev/sda\fR)
+\fI/dev/sda\fR).
 .TP
 \fB-D | --remove-dups\fR
-Remove duplicated entries from BootOrder
+Remove duplicated entries from BootOrder.
 .TP
-\fB-e | --edd30 \fI1|3|-1\fB\fR
-Force EDD 1.0 or 3.0 creation variables, or guess.
+\fB-e | --edd \fI1|3\fB\fR
+Force EDD 1.0 or 3.0 creation variables.
+
+Use \fB-e 1\fR together with \fB-E\fR if you are using a very old system which
+uses UEFI to boot, but requires legacy CSM (BIOS) device drivers for storage
+devices.
+
+\fB-e 3\fR is now deprecated, and is an alias for \fB--full-dev-path\fR.
 .TP
 \fB-E | --edd-device \fINUM\fB\fR
-EDD 1.0 device number (defaults to 0x80)
+EDD 1.0 device number (defaults to 0x80).  See \fB--edd\fR.
+.TP
+\fB--full-dev-path\fR
+Force creation of boot entries use a full UEFI device path, starting at the
+PCIe root or equivalent on the current platform.  The default is to use a hard
+disk based HD() abbreviated path.
+
+You shouldn't need to use this option unless the system firmware won't boot off
+of your device using an abbreviated HD() device path.
+
+Note that forcing a full path will fail if we don't know what the system device
+root is, how the specified device is connected to it, or how to encode any one
+of those.
+.TP
+\fB--file-dev-path\fR
+Force creation of boot entries use an abbreviated UEFI device path which starts
+with the File() portion of the path.  The default is to use a hard disk based
+HD() abbreviated path.
+.TP
+\fB-f | --reconnect \fR
+Re-connect devices after driver is loaded.  Only applicable for driver entries.
+.TP
+\fB-F | --do-not-reconnect \fR
+Do not reconnect devices after driver is loaded.  Only applicable for driver entries.
 .TP
 \fB-g | --gpt\fR
-Force disk with invalid PMBR to be treated as GPT
+Force disk with invalid PMBR to be treated as GPT.
 .TP
 \fB-i | --iface \fINAME\fB\fR
-create a netboot entry for the named interface
+Create a netboot entry for the named interface.
+.TP
+\fB-k | --keep \fINAME\fB\fR
+Keep old entries when adjusting order.
 .TP
 \fB-l | --loader \fINAME\fB\fR
-Specify a loader (defaults to \fI\\\\elilo.efi\fR)
+Specify a loader (defaults to \fI@@DEFAULT_LOADER@@\fR).
 .TP
 \fB-L | --label \fILABEL\fB\fR
-Boot manager display label (defaults to "Linux")
+Boot manager display label (defaults to "Linux").
 .TP
 \fB-m | --mirror-below-4G \fIt|f\fB\fR
-Set t if you want to mirror memory below 4GB
+Set t if you want to mirror memory below 4GB.
 .TP
 \fB-M | --mirror-above-4G \fIX\fB\fR
-X percentage memory to mirror above 4GB. Floating-point value with up to 2 decimal places is accepted.
+X percentage memory to mirror above 4GB.  Floating-point value with up to 2 decimal places is accepted.
 .TP
 \fB-n | --bootnext \fIXXXX\fB\fR
-Set BootNext to XXXX (hex)
+Set BootNext to XXXX (hex).
 .TP
 \fB-N | --delete-bootnext\fR
-Delete BootNext
+Delete BootNext.
 .TP
 \fB-o | --bootorder \fIXXXX\fB,\fIYYYY\fB,\fIZZZZ\fB\fR
-Explicitly set BootOrder (hex). Any value from 0 to FFFF is accepted so long as it corresponds to an existing Boot#### variable, and zero padding is not required.
+Explicitly set BootOrder (hex).  Any value from 0 to FFFF is accepted so long as it corresponds to an existing Boot#### variable, and zero padding is not required.
 .TP
 \fB-O | --delete-bootorder\fR
-Delete BootOrder
+Delete BootOrder.
 .TP
 \fB-p | --part \fIPART\fB\fR
-Partition number containing the bootloader (defaults to 1)
+Partition number containing the bootloader (defaults to 1).
 .TP
 \fB-q | --quiet\fR
-Quiet mode - supresses output.
+Quiet mode - suppresses output.
 .TP
 \fB-r | --driver\fR
 Operate on Driver#### variables instead of Boot#### variables.
@@ -100,23 +135,23 @@ Delete Timeout variable.
 .TP
 \fB-u | --unicode | --UCS-2 \fR
 Handle extra command line arguments as UCS-2 (default is
-ASCII)
+ASCII).
 .TP
 \fB-v | --verbose\fR
-Verbose mode - prints additional information
+Verbose mode - prints additional information.
 .TP
 \fB-V | --version\fR
 Just print version string and exit.
 .TP
 \fB-w | --write-signature\fR
-write unique signature to the MBR if needed
+Write unique signature to the MBR if needed.
 .TP
 \fB-y | --sysprep\fR
 Operate on SysPrep#### variables instead of Boot#### variables.
 .TP
 \fB-@ | --append-binary-args \fR
-append extra variable args from file (use - to read
-from stdin). Data in file is appended as command line
+Append extra variable args from file (use - to read
+from stdin).  Data in file is appended as command line
 arguments to the boot loader command, with no modification to
 the data, so you can pass any binary or text data necessary.
 .SH "EXAMPLES"
@@ -147,12 +182,12 @@ running system
 \(bu
 BootOrder - the boot order as would appear in the boot manager.
 The boot manager tries to boot the first active entry in this
-list. If unsuccessful, it tries the next entry, and so on.
+list.  If unsuccessful, it tries the next entry, and so on.
 .TP 0.2i
 \(bu
 BootNext - the boot entry which is scheduled to be run on next
-boot. This supercedes BootOrder for one boot only, and is
-deleted by the boot manager after first use. This allows you
+boot.  This supersedes BootOrder for one boot only, and is
+deleted by the boot manager after first use.  This allows you
 to change the next boot behavior without changing BootOrder.
 .TP 0.2i
 \(bu
@@ -167,11 +202,11 @@ flag (* means active) and the name displayed on the screen.
 .RE
 .SS "Creating a new boot option"
 An OS installer would call \fBefibootmgr -c\fR\&.
-This assumes that \fI/boot/efi\fR is your EFI System
-Partition, and is mounted at \fI/dev/sda1\fR\&. This
+This assumes that \fI/dev/sda1\fR is your EFI System
+Partition, and is mounted at \fI/boot/efi\fR\&.  This
 creates a new boot option, called "Linux", and puts it at the top of
-the boot order list. Options may be passed to modify the default
-behavior. The default OS Loader is \fIelilo.efi\fR\&.
+the boot order list.  Options may be passed to modify the default
+behavior.  The default OS Loader is \fI@@DEFAULT_LOADER@@\fR\&.
 .SS "Changing the boot order"
 Assuming the configuration in the first example,
 \fBefibootmgr -o 3,4\fR could be called to specify
@@ -186,7 +221,7 @@ Assuming the configuration in the first example,
 entry 4 and remove it from the BootOrder.
 .SS "Creating network boot entries"
 A system administrator wants to create a boot option to network
-boot. You create the boot entry with:
+boot.  You create the boot entry with:
 \fBefibootmgr -c -i eth0 -L netboot [ -l '\\filename.efi' ]\fR
 .SH "BUGS"
 .PP
@@ -196,6 +231,6 @@ Please direct any bugs, features, patches, etc. to the Red Hat bootloader team a
 This man page was generated by dann frazier <dannf@debian.org> for the
 Debian GNU/Linux operating system and updated by Robert Bisewski
 <contact@ibiscybernetics.com>, but may be used by others.
-.SH "SEE ALSO"
 .PP
-elilo(1)
+It has subsequently been modified by Robbie Harwood <rharwood@redhat.com> for
+the efibootmgr project.
